@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "matplotlib-context-writer"
 version = "0.1.0"
-description = "Utilities for writing context managers for matplotlib."
+description = "Plot matplotlib animations flexibly."
 authors = ["Jona Klemenc <jona.klemenc@posteo.de>"]
 readme = "README.md"
 packages = [{include = "matplotlib_context_writer", from = "src"}]
