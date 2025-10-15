@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "matplotlib-context-writer"
+version = "0.1.0"
+description = "Utilities for writing context managers for matplotlib."
+authors = ["Jona Klemenc <jona.klemenc@posteo.de>"]
+readme = "README.md"
+packages = [{include = "matplotlib_context_writer", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.2"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
