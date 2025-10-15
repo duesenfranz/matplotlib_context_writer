@@ -2,8 +2,10 @@
 import os
 from pathlib import Path
 import tempfile
+from typing import Optional
 from matplotlib.figure import Figure
 from matplotlib import pyplot as plt
+from matplotlib import image as mpimg
 
 from matplotlib_context_writer.interface import (
     EnteredVisualizer,
@@ -203,6 +205,110 @@ class LiveVideoVisualizer(Visualizer):
         return _LiveVideoEnterVisualizer(fig, self.fps)
 
 
+class _GridSnapshotEnteredVisualizer(EnteredVisualizer):
+    """Capture figure snapshots for later placement in a target figure."""
+
+    def __init__(self, source_fig: Figure, temp_dir: tempfile.TemporaryDirectory) -> None:
+        super().__init__()
+        self.source_fig = source_fig
+        self.temp_dir = temp_dir
+        self.frame_paths: list[Path] = []
+
+    def step(self):
+        frame_index = len(self.frame_paths)
+        output_path = Path(self.temp_dir.name) / f"frame_{frame_index:04d}.png"
+        self.source_fig.savefig(output_path)
+        self.frame_paths.append(output_path)
+
+
+class _GridSnapshotEnterVisualizer(EnterVisualizer):
+    """Context manager that prepares a grid of snapshots when exiting."""
+
+    def __init__(self, source_fig: Figure, target_fig: Figure, count: int, orientation: str) -> None:
+        if count < 2:
+            raise ValueError("count must be at least 2 to include first and last frames.")
+        orientation_upper = orientation.upper()
+        if orientation_upper not in {"ROW", "COLUMN"}:
+            raise ValueError("orientation must be either 'ROW' or 'COLUMN'.")
+        self.source_fig = source_fig
+        self.target_fig = target_fig
+        self.count = count
+        self.orientation = orientation_upper
+        self.temp_dir: Optional[tempfile.TemporaryDirectory] = None
+        self.entered: Optional[_GridSnapshotEnteredVisualizer] = None
+
+    def __enter__(self) -> _GridSnapshotEnteredVisualizer:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.entered = _GridSnapshotEnteredVisualizer(self.source_fig, self.temp_dir)
+        return self.entered
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            if self.entered is None:
+                return
+            frame_paths = self.entered.frame_paths
+            if not frame_paths:
+                return
+            selected_paths = self._select_frames(frame_paths)
+            self._render_to_target(selected_paths)
+        finally:
+            if self.temp_dir is not None:
+                self.temp_dir.cleanup()
+
+    def _select_frames(self, frame_paths: list[Path]) -> list[Path]:
+        total = len(frame_paths)
+        desired = min(self.count, total)
+        if desired == 1:
+            return [frame_paths[-1]]
+        if desired == total:
+            return frame_paths
+        indices: list[int] = []
+        for idx in range(desired):
+            fraction = idx / (desired - 1)
+            computed = int(round(fraction * (total - 1)))
+            if not indices or computed != indices[-1]:
+                indices.append(computed)
+        while len(indices) < desired:
+            for candidate in range(total):
+                if candidate not in indices:
+                    indices.append(candidate)
+                if len(indices) == desired:
+                    break
+        indices = sorted(indices[:desired])
+        return [frame_paths[i] for i in indices]
+
+    def _render_to_target(self, selected_paths: list[Path]) -> None:
+        self.target_fig.clear()
+        n_frames = len(selected_paths)
+        if self.orientation == "ROW":
+            axes = self.target_fig.subplots(1, n_frames)
+        else:
+            axes = self.target_fig.subplots(n_frames, 1)
+        if hasattr(axes, "flat"):
+            axes_list = list(axes.flat)
+        elif isinstance(axes, (list, tuple)):
+            axes_list = list(axes)
+        else:
+            axes_list = [axes]
+        for ax, image_path in zip(axes_list, selected_paths):
+            ax.imshow(mpimg.imread(image_path))
+            ax.axis("off")
+        self.target_fig.tight_layout()
+        self.target_fig.canvas.draw_idle()
+
+
+class GridSnapshotVisualizer(Visualizer):
+    """Summarize animation progress by arranging selected frames in a grid."""
+
+    def __init__(self, target_fig: Figure, count: int, orientation: str = "ROW") -> None:
+        self.target_fig = target_fig
+        self.count = count
+        self.orientation = orientation
+
+    def enter(self, fig: Figure) -> EnterVisualizer:
+        return _GridSnapshotEnterVisualizer(fig, self.target_fig, self.count, self.orientation)
+
+
 def demo_video_visualizer():
     """Demonstrate recording a simple plot to a video file."""
     fig, ax = plt.subplots()
@@ -254,10 +360,32 @@ def demo_live_video_visualizer():
     print("LiveVideoVisualizer demo completed.")
 
 
+def demo_grid_snapshot_visualizer():
+    """Demonstrate summarizing key frames in a dedicated figure."""
+    source_fig, source_ax = plt.subplots()
+    target_fig = plt.figure(figsize=(8, 2))
+    visualizer = GridSnapshotVisualizer(target_fig, count=4, orientation="ROW")
+    with visualizer.enter(source_fig) as entered:
+        for frame in range(6):
+            source_ax.clear()
+            source_ax.plot([0, 1, 2], [frame, frame + 0.5, frame])
+            source_ax.set_ylim(0, 6)
+            source_ax.set_title(f"Source frame {frame}")
+            entered.step()
+    plt.close(source_fig)
+    target_fig.suptitle("GridSnapshotVisualizer Demo")
+    target_fig.canvas.draw_idle()
+    plt.show(block=False)
+    plt.pause(2)
+    plt.close(target_fig)
+    print("GridSnapshotVisualizer demo completed.")
+
+
 def run_demos():
     demo_video_visualizer()
     demo_show_visualizer()
     demo_live_video_visualizer()
+    demo_grid_snapshot_visualizer()
     print("All demos completed.")
 
 
