@@ -1,8 +1,9 @@
 
 import os
+import shutil
 from pathlib import Path
 import tempfile
-from typing import Optional
+from typing import List, Optional
 from matplotlib.figure import Figure
 from matplotlib import pyplot as plt
 from matplotlib import image as mpimg
@@ -309,6 +310,144 @@ class GridSnapshotVisualizer(Visualizer):
         return _GridSnapshotEnterVisualizer(fig, self.target_fig, self.count, self.orientation)
 
 
+class _KeyFrameFileEnteredVisualizer(EnteredVisualizer):
+    """Capture each step by saving both PNG and PDF versions to a temporary directory."""
+
+    def __init__(self, source_fig: Figure, temp_dir: tempfile.TemporaryDirectory, dpi: Optional[int]) -> None:
+        super().__init__()
+        self.source_fig = source_fig
+        self.temp_dir = temp_dir
+        self.dpi = dpi
+        self.frames: List[tuple[Path, Path]] = []
+
+    def step(self):
+        index = len(self.frames)
+        base_name = f"frame_{index:04d}"
+        png_path = Path(self.temp_dir.name) / f"{base_name}.png"
+        pdf_path = Path(self.temp_dir.name) / f"{base_name}.pdf"
+        if self.dpi is not None:
+            self.source_fig.savefig(png_path, dpi=self.dpi)
+            self.source_fig.savefig(pdf_path, dpi=self.dpi)
+        else:
+            self.source_fig.savefig(png_path)
+            self.source_fig.savefig(pdf_path)
+        self.frames.append((png_path, pdf_path))
+
+
+class _KeyFrameFileEnterVisualizer(EnterVisualizer):
+    """Context manager that writes selected key frames to disk as PNG and PDF files."""
+
+    def __init__(
+        self,
+        source_fig: Figure,
+        target_dir: Path,
+        count: int,
+        prefix: str,
+        dpi: Optional[int],
+    ) -> None:
+        if count < 1:
+            raise ValueError("count must be at least 1.")
+        self.source_fig = source_fig
+        self.target_dir = target_dir
+        self.count = count
+        self.prefix = prefix
+        self.dpi = dpi
+        self.temp_dir: Optional[tempfile.TemporaryDirectory] = None
+        self.entered: Optional[_KeyFrameFileEnteredVisualizer] = None
+
+    def __enter__(self) -> _KeyFrameFileEnteredVisualizer:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.entered = _KeyFrameFileEnteredVisualizer(self.source_fig, self.temp_dir, self.dpi)
+        return self.entered
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            if self.entered is None:
+                return
+            frames = self.entered.frames
+            if not frames:
+                return
+            selected = self._select_frames(frames)
+            self._write_outputs(selected)
+        finally:
+            if self.temp_dir is not None:
+                self.temp_dir.cleanup()
+
+    def _select_frames(self, frames: List[tuple[Path, Path]]) -> List[tuple[Path, Path]]:
+        total = len(frames)
+        desired = min(self.count, total)
+        if desired == 1:
+            return [frames[-1]]
+        if desired == total:
+            return frames
+        indices: List[int] = []
+        for idx in range(desired):
+            fraction = idx / (desired - 1)
+            computed = int(round(fraction * (total - 1)))
+            if not indices or computed != indices[-1]:
+                indices.append(computed)
+        while len(indices) < desired:
+            for candidate in range(total):
+                if candidate not in indices:
+                    indices.append(candidate)
+                if len(indices) == desired:
+                    break
+        indices = sorted(indices[:desired])
+        return [frames[i] for i in indices]
+
+    def _write_outputs(self, selected: List[tuple[Path, Path]]) -> None:
+        self.target_dir.mkdir(parents=True, exist_ok=True)
+        for output_index, (png_path, pdf_path) in enumerate(selected):
+            base_name = f"{self.prefix}{output_index:04d}"
+            shutil.copy2(png_path, self.target_dir / f"{base_name}.png")
+            shutil.copy2(pdf_path, self.target_dir / f"{base_name}.pdf")
+
+
+class KeyFrameFileVisualizer(Visualizer):
+    """Save evenly spaced key frames as both PNG and PDF files in a target directory."""
+
+    def __init__(
+        self,
+        target_dir: Path,
+        count: int,
+        prefix: str = "keyframe_",
+        dpi: Optional[int] = None,
+    ) -> None:
+        self.target_dir = target_dir
+        self.count = count
+        self.prefix = prefix
+        self.dpi = dpi
+
+    def enter(self, fig: Figure) -> EnterVisualizer:
+        return _KeyFrameFileEnterVisualizer(
+            fig,
+            self.target_dir,
+            self.count,
+            self.prefix,
+            self.dpi,
+        )
+
+
+def demo_key_frame_file_visualizer():
+    """Demonstrate writing key frames to disk in both PNG and PDF formats."""
+    source_fig, ax = plt.subplots()
+    target_dir = Path.cwd() / "keyframe_frames"
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+
+    visualizer = KeyFrameFileVisualizer(target_dir, count=3, prefix="demo_keyframe_")
+    with visualizer.enter(source_fig) as entered:
+        for frame in range(5):
+            ax.clear()
+            ax.plot([0, 1, 2], [frame, frame + 0.5, frame])
+            ax.set_ylim(0, 5)
+            ax.set_title(f"Frame {frame}")
+            entered.step()
+
+    plt.close(source_fig)
+    print(f"Key frames written to: {target_dir}")
+
+
 def demo_video_visualizer():
     """Demonstrate recording a simple plot to a video file."""
     fig, ax = plt.subplots()
@@ -382,6 +521,7 @@ def demo_grid_snapshot_visualizer():
 
 
 def run_demos():
+    demo_key_frame_file_visualizer()
     demo_video_visualizer()
     demo_show_visualizer()
     demo_live_video_visualizer()
